@@ -19,7 +19,28 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+___UPDATE HISTORY___
 
+8/6/2016... for version V002.
+
+Update scripts to support backup to an URL like \\Servername\Sharename or \\Servername\Sharename\Whatever
+ 
+done:	Update sp_ScheduleBackups to accept an @urlPath parameter.  This will be mutually exclusive with @StorageContainerURL.  
+done:	Update sp_ScheduleBackups to check if an @urlPath param has been supplied and that it looks like \\someServer\someShare
+done:	Update sp_ScheduleBackups to accept optional @intFullBackupExpireDays, @intDiffBackupExpireDays and @intLogBackupExpireDays parameters.  If supplied these will be used with Ola's scripts to expire the backups.
+done:	Update sp_ScheduleBackups to create jobs as backup to UNC paths instead of URL
+done:	Update usp_RestoreDB to have optional parameter for BlobCredential.  If possible have it check to see if any of the files to be restored are from an URL path and complain about not having the parameter if necessary.
+done:	Update usp_AutoMirror to have optional parameter for BlobCredential.  If possible have it check to see if any of the files to be restored are from an URL path and complain about not having the parameter if necessary.
+done:	Make changes so that all of the above param changes work :)
+done:	Update documentation
+
+Todo: Test basic use cases for sp_ScheduleBackups, usp_RestoreDB, usp_AutoMirror
+Todo: In testing noticed that it is possible to encounter an error because a database has not yet been backed up with a full + trans log backup.  It should be pretty easy to check for this as we do with the 
+			tests for whether there is an URL backup or not.  Consider adding better checking & advice for this rather than allowing the process to fail with an ambiguous(ish) error.
+
+
+
+_______________________
 
 The following stored procs are provided by SQLFairy http://sqlfairy.com.au .  
 
@@ -230,10 +251,10 @@ GO
 
 ALTER PROC [dbo].[sp_ScheduleBackups]
 (
-	@OlaDBName SYSNAME --The database which contains the OLA Hallengren maintenance solution.
-,	@StorageContainerURL NVARCHAR(255) --Full url to storage container where this server will backup.  This is the Azure "Primary blob service endpoint" + / + "Blob storage Container name"
-,	@BlobCredential NVARCHAR(255) --The name of the blob credential.  This corresponds to the "Storage Account Name" of your Storage Account.
-,	@BlobCredentialSecret NVARCHAR(255) --Shhhh.  This is either the "primary access key" or "secondary access key" for your Azure Storage Account.
+	@OlaDBName SYSNAME = 'master' --The database which contains the OLA Hallengren maintenance solution.
+,	@StorageContainerURL NVARCHAR(255) = NULL --Full url to storage container where this server will backup.  This is the Azure "Primary blob service endpoint" + / + "Blob storage Container name" NB: Now optional.  Must supply either this or @URLBackupPath.
+,	@BlobCredential NVARCHAR(255) = NULL --The name of the blob credential.  This corresponds to the "Storage Account Name" of your Storage Account.  
+,	@BlobCredentialSecret NVARCHAR(255) = NULL --Shhhh.  This is either the "primary access key" or "secondary access key" for your Azure Storage Account.
 ,	@ProfileName NVARCHAR(255) --The email profile to use on the system.  Required because we are sending emails from a job step.  Must already exist
 ,	@OperatorName NVARCHAR(255) --This is the name of an Operator on your server.  If the operator specified doesn't exist it will be created.
 ,	@OperatorEmail NVARCHAR(1024) --This is the email address of the operator specified in @OperatorName.  This is only effective if the operator doesn't already exist.  It will not update the email of an existing operator.
@@ -241,6 +262,10 @@ ALTER PROC [dbo].[sp_ScheduleBackups]
 ,	@FullBackupDay VARCHAR(15) = NULL --We default to Saturdays further down if not supplied (or matched).  This can be supplied as 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat' or 'Sun'. 
 ,	@LogBackupFreqMins INT = 15 --Default to 15 minute interval if not supplied.  This is how often we're going to schedule transaction log backups.
 ,	@BackupTime TIME(0) = NULL --Time that Full and Differential backups will start e.g. '11:00:00 PM' or '23:00:00'
+,	@URLBackupPath NVARCHAR(255) = NULL --An optional URL path \\Servername\Sharename\SomeOptional\OtherPath\ which can be supplied instead of the @StorageContainerURL
+,	@intFullBackupExpireDays INT = NULL --Optional param to supply the number of days for backup expiry to Ola Hallengren jobs.  Only effective with @URLBackupPath as this is not supported for blob storage
+,	@intDiffBackupExpireDays INT = NULL --Optional param to supply the number of days for backup expiry to Ola Hallengren jobs.  Only effective with @URLBackupPath as this is not supported for blob storage
+,	@intLogBackupExpireDays INT  = NULL --Optional param to supply the number of days for backup expiry to Ola Hallengren jobs.  Only effective with @URLBackupPath as this is not supported for blob storage
 )
 AS
 BEGIN
@@ -274,6 +299,7 @@ Also schedules the jobs based on provided input.
 
 @StorageContainerURL NVARCHAR(255)
  The full URL to the storage container where this server will backup.  This is the Azure "Primary blob service endpoint" + / + "Blob storage Container name"
+ This parameter is optional and is mutually exclusive with @URLBackupPath.  Highlander.
 
 @BlobCredential NVARCHAR(255)
  The name of the blob credential.  This corresponds to the "Storage Account Name" of your Azure Storage Account.
@@ -302,6 +328,18 @@ Also schedules the jobs based on provided input.
 @BackupTime TIME(0) = NULL
  Time that Full and Differential backups will start e.g. '11:00:00 PM' or '23:00:00'
 
+@URLBackupPath NVARCHAR(255) = NULL 
+ URL path \\Servername\Sharename\SomeOptional\OtherPath\ which can be supplied instead of the @StorageContainerURL
+ This param is optional but mutually exclusive with @StorageContainerURL
+
+@intFullBackupExpireDays INT = NULL 
+ Optional param to supply the number of days for backup expiry to Ola Hallengren jobs.  Only effective with @URLBackupPath as this is not supported for blob storage
+
+@intDiffBackupExpireDays INT = NULL 
+	Optional param to supply the number of days for backup expiry to Ola Hallengren jobs.  Only effective with @URLBackupPath as this is not supported for blob storage
+
+@intLogBackupExpireDays INT  = NULL 
+	Optional param to supply the number of days for backup expiry to Ola Hallengren jobs.  Only effective with @URLBackupPath as this is not supported for blob storage
 
 Provided by SQLFairy http://sqlfairy.com.au
 
@@ -322,6 +360,61 @@ DECLARE @JobOwner NVARCHAR(255)
 ,		@MonthlyBackupDescription NVARCHAR(max)
 ,		@MonthlyBackupJobCommand NVARCHAR(max) 
 ,		@SendDREmailCommand NVARCHAR(MAX)
+
+--Now we're supporting EITHER supplying a value for @BlobCredential OR @URLBackupPath.  Can't have both I'm afraid (or could you?... Hmmm)
+
+--Check that we have one or the other and not both...
+DECLARE 
+	@BackupTypeParamErrorLevel INT = 0
+,	@BackupTypeParamErrorMessage NVARCHAR(255) = NULL
+
+IF @StorageContainerURL IS NULL AND @URLBackupPath IS NULL 
+	BEGIN
+		SET @BackupTypeParamErrorLevel = 2 --Error- Abort :(
+		SET @BackupTypeParamErrorMessage = 'Must supply a value for either @URLBackupPath or @StorageContainerURL'
+	END 
+
+IF @StorageContainerURL IS NOT NULL AND @URLBackupPath IS NOT NULL 
+	BEGIN
+		SET @BackupTypeParamErrorLevel = 2 --Error- Abort :(
+		SET @BackupTypeParamErrorMessage = 'Can only supply a value for either @URLBackupPath or @StorageContainerURL.  You supplied both?'
+	END
+
+IF @StorageContainerURL IS NOT NULL AND @URLBackupPath IS NULL AND (@BlobCredentialSecret IS NULL OR @BlobCredential IS NULL)
+	BEGIN
+		SET @BackupTypeParamErrorLevel = 2 --Error- Abort :(
+		SET @BackupTypeParamErrorMessage = 'Need to specify a value for @BlobCredential and @BlobCredentialSecret'
+	END
+
+IF @StorageContainerURL IS NULL AND @URLBackupPath IS NOT NULL AND (@BlobCredentialSecret IS NOT NULL OR @BlobCredential IS NOT NULL)
+	BEGIN
+		SET @BackupTypeParamErrorLevel = 1 --Warning! Continue
+		SET @BackupTypeParamErrorMessage = '@BlobCredential &/or @BlobCredentailSecret supplied but backing up to an URL'
+	END
+
+--ADD A CHECK FOR A VALID URL IN HERE >>>>>>>>>>>>>>>>>>>>>>>
+
+IF @BackupTypeParamErrorLevel > 0
+	BEGIN
+    	IF @BackupTypeParamErrorLevel = 1 PRINT 'WARNING!' + CHAR(10) + @BackupTypeParamErrorMessage
+		IF @BackupTypeParamErrorLevel = 2
+			BEGIN
+            	RAISERROR(@BackupTypeParamErrorMessage, 1, 1) 
+				RETURN --Stop here
+            END
+
+    END
+
+---Check that the maximum email attachment size is large enough.  Otherwise we might receive errors unexpectedly.
+---Don't just blindly set it otherwise we could actually be decreasing a larger val set for some other reason :)
+IF CAST(ISNULL((select paramvalue FROM msdb.dbo.sysmail_configuration WHERE paramname = 'MaxFileSize'), 0) as int) < 104857600
+BEGIN
+	PRINT 'Increasing sysmail MaxFileSize to 104857600' + CHAR(10)
+	EXECUTE msdb.dbo.sysmail_configure_sp 'MaxFileSize', '104857600';
+END
+ELSE PRINT 'sysmail MaxFileSize seems large enough. Carry on...' + CHAR(10)
+
+
 
 --Handle supplied backup day text and also determine other days for differential backups...
 /*
@@ -408,25 +501,48 @@ EXEC [sys].[sp_executesql] @credentialSQL
 
 SET @JobOwner = 'SA'
 
+--Okay.  We're now going to handle either creating jobs for Azure blob storage or a UNC path...
 
-SET @FullBackupJobName = 'DatabaseBackup BLOB - FULL - ALL_DATABASES_WITH_EXCEPTIONS'
-SET @FullBackupJobCommand = N'sqlcmd -E -S $(ESCAPE_SQUOTE(SRVR)) -d ' + @OlaDBName + ' -Q "EXECUTE [dbo].[DatabaseBackup] @Databases = ''ALL_DATABASES, -%DROPDB%'', @URL = ''' + @StorageContainerURL +''',@Credential = ''' + @BlobCredential + ''', @BackupType = ''FULL'', @ChangeBackupType = ''Y'', @Verify = ''Y'', @Compress = ''Y'', @CheckSum = ''Y'', @LogToTable = ''Y''" -b' 
-SET @FullBackupDescription = N'Backup all user and system databases to blob storage with the exception of databases whose name is like ''%DROPDB%'''
+IF @URLBackupPath IS NULL
+	BEGIN --Backup to blob
+		SET @FullBackupJobName = 'DatabaseBackup BLOB - FULL - ALL_DATABASES_WITH_EXCEPTIONS'
+		SET @FullBackupJobCommand = N'sqlcmd -E -S $(ESCAPE_SQUOTE(SRVR)) -d ' + @OlaDBName + ' -Q "EXECUTE [dbo].[DatabaseBackup] @Databases = ''ALL_DATABASES, -%DROPDB%'', @URL = ''' + @StorageContainerURL +''',@Credential = ''' + @BlobCredential + ''', @BackupType = ''FULL'', @ChangeBackupType = ''Y'', @Verify = ''Y'', @Compress = ''Y'', @CheckSum = ''Y'', @LogToTable = ''Y''" -b' 
+		SET @FullBackupDescription = N'Backup all user and system databases to blob storage with the exception of databases whose name is like ''%DROPDB%'''
 
-SET @DiffBackupJobName = 'DatabaseBackup BLOB - DIFF - ALL_DATABASES_WITH_EXCEPTIONS'
-SET @DiffBackupJobCommand =N'sqlcmd -E -S $(ESCAPE_SQUOTE(SRVR)) -d ' + @OlaDBName + ' -Q "EXECUTE [dbo].[DatabaseBackup] @Databases = ''ALL_DATABASES, -%DROPDB%'', @URL = ''' + @StorageContainerURL +''',@Credential = ''' + @BlobCredential + ''', @BackupType = ''DIFF'', @ChangeBackupType = ''Y'', @Verify = ''Y'', @Compress = ''Y'', @CheckSum = ''Y'', @LogToTable = ''Y''" -b' 
-SET @DiffBackupDescription =N'Perform differential backup of all user and system databases to blob storage with the exception of databases whose name is like ''%DROPDB%''' 
+		SET @DiffBackupJobName = 'DatabaseBackup BLOB - DIFF - ALL_DATABASES_WITH_EXCEPTIONS'
+		SET @DiffBackupJobCommand =N'sqlcmd -E -S $(ESCAPE_SQUOTE(SRVR)) -d ' + @OlaDBName + ' -Q "EXECUTE [dbo].[DatabaseBackup] @Databases = ''ALL_DATABASES, -%DROPDB%'', @URL = ''' + @StorageContainerURL +''',@Credential = ''' + @BlobCredential + ''', @BackupType = ''DIFF'', @ChangeBackupType = ''Y'', @Verify = ''Y'', @Compress = ''Y'', @CheckSum = ''Y'', @LogToTable = ''Y''" -b' 
+		SET @DiffBackupDescription =N'Perform differential backup of all user and system databases to blob storage with the exception of databases whose name is like ''%DROPDB%''' 
 
-SET @LogBackupJobName =N'DatabaseBackup BLOB - LOG - ALL_DATABASES_WITH_EXCEPTIONS'
-SET @LogBackupJobCommand  =N'sqlcmd -E -S $(ESCAPE_SQUOTE(SRVR)) -d ' + @OlaDBName + ' -Q "EXECUTE [dbo].[DatabaseBackup] @Databases = ''ALL_DATABASES, -%DROPDB%'', @URL = ''' + @StorageContainerURL +''',@Credential = ''' + @BlobCredential + ''', @BackupType = ''LOG'', @ChangeBackupType = ''Y'', @Verify = ''Y'', @Compress = ''Y'', @CheckSum = ''Y'', @LogToTable = ''Y''" -b' 
-SET @LogBackupDescription =N'Perform transaction log backup of all user and system databases to blob storage with the exception of databases whose name is like ''%DROPDB%'''
+		SET @LogBackupJobName =N'DatabaseBackup BLOB - LOG - ALL_DATABASES_WITH_EXCEPTIONS'
+		SET @LogBackupJobCommand  =N'sqlcmd -E -S $(ESCAPE_SQUOTE(SRVR)) -d ' + @OlaDBName + ' -Q "EXECUTE [dbo].[DatabaseBackup] @Databases = ''ALL_DATABASES, -%DROPDB%'', @URL = ''' + @StorageContainerURL +''',@Credential = ''' + @BlobCredential + ''', @BackupType = ''LOG'', @ChangeBackupType = ''Y'', @Verify = ''Y'', @Compress = ''Y'', @CheckSum = ''Y'', @LogToTable = ''Y''" -b' 
+		SET @LogBackupDescription =N'Perform transaction log backup of all user and system databases to blob storage with the exception of databases whose name is like ''%DROPDB%'''
 
-SET @MonthlyBackupJobName=N'DatabaseBackup BLOB - FULL COPY ONLY - ALL_DATABASES_WITH_EXCEPTIONS'
-SET @MonthlyBackupJobCommand  =N'sqlcmd -E -S $(ESCAPE_SQUOTE(SRVR)) -d ' + @OlaDBName + ' -Q "EXECUTE [dbo].[DatabaseBackup] @Databases = ''ALL_DATABASES, -%DROPDB%'', @URL = ''' + @StorageContainerURL +''',@Credential = ''' + @BlobCredential + ''', @BackupType = ''FULL'', @CopyOnly = ''Y'', @Verify = ''Y'', @Compress = ''Y'', @CheckSum = ''Y'', @LogToTable = ''Y''" -b' 
-SET @MonthlyBackupDescription =N'Perform full copy only backup of all user and system databases to blob storage with the exception of databases whose name is like ''%DROPDB%'''
+		SET @MonthlyBackupJobName=N'DatabaseBackup BLOB - FULL COPY ONLY - ALL_DATABASES_WITH_EXCEPTIONS'
+		SET @MonthlyBackupJobCommand  =N'sqlcmd -E -S $(ESCAPE_SQUOTE(SRVR)) -d ' + @OlaDBName + ' -Q "EXECUTE [dbo].[DatabaseBackup] @Databases = ''ALL_DATABASES, -%DROPDB%'', @URL = ''' + @StorageContainerURL +''',@Credential = ''' + @BlobCredential + ''', @BackupType = ''FULL'', @CopyOnly = ''Y'', @Verify = ''Y'', @Compress = ''Y'', @CheckSum = ''Y'', @LogToTable = ''Y''" -b' 
+		SET @MonthlyBackupDescription =N'Perform full copy only backup of all user and system databases to blob storage with the exception of databases whose name is like ''%DROPDB%'''
+	END
+ELSE 
+	BEGIN --Backup to UNC path
+    	SET @FullBackupJobName = 'DatabaseBackup UNC - FULL - ALL_DATABASES_WITH_EXCEPTIONS'
+		SET @FullBackupJobCommand = N'sqlcmd -E -S $(ESCAPE_SQUOTE(SRVR)) -d ' + @OlaDBName + ' -Q "EXECUTE [dbo].[DatabaseBackup] @Databases = ''ALL_DATABASES, -%DROPDB%'', @Directory = ''' + @URLBackupPath + ''', @BackupType = ''FULL'', @ChangeBackupType = ''Y'', @Verify = ''Y'', @Compress = ''Y'', @CheckSum = ''Y'',' + CASE WHEN @intFullBackupExpireDays IS NOT NULL THEN ' @CleanupTime = ' + CAST(@intFullBackupExpireDays * 24 AS VARCHAR(10)) + ',' ELSE '' END + ' @LogToTable = ''Y''" -b' 
+		SET @FullBackupDescription = N'Backup all user and system databases to a UNC path with the exception of databases whose name is like ''%DROPDB%'''
+
+		SET @DiffBackupJobName = 'DatabaseBackup UNC - DIFF - ALL_DATABASES_WITH_EXCEPTIONS'
+		SET @DiffBackupJobCommand =N'sqlcmd -E -S $(ESCAPE_SQUOTE(SRVR)) -d ' + @OlaDBName + ' -Q "EXECUTE [dbo].[DatabaseBackup] @Databases = ''ALL_DATABASES, -%DROPDB%'', @Directory = ''' + @URLBackupPath +''', @BackupType = ''DIFF'', @ChangeBackupType = ''Y'', @Verify = ''Y'', @Compress = ''Y'', @CheckSum = ''Y'',' + CASE WHEN @intDiffBackupExpireDays IS NOT NULL THEN ' @CleanupTime = ' + CAST(@intDiffBackupExpireDays * 24 AS VARCHAR(10)) + ',' ELSE '' END + ' @LogToTable = ''Y''" -b' 
+		SET @DiffBackupDescription =N'Perform differential backup of all user and system databases to a UNC path with the exception of databases whose name is like ''%DROPDB%''' 
+
+		SET @LogBackupJobName =N'DatabaseBackup UNC - LOG - ALL_DATABASES_WITH_EXCEPTIONS'
+		SET @LogBackupJobCommand  =N'sqlcmd -E -S $(ESCAPE_SQUOTE(SRVR)) -d ' + @OlaDBName + ' -Q "EXECUTE [dbo].[DatabaseBackup] @Databases = ''ALL_DATABASES, -%DROPDB%'', @Directory = ''' + @URLBackupPath +''', @BackupType = ''LOG'', @ChangeBackupType = ''Y'', @Verify = ''Y'', @Compress = ''Y'', @CheckSum = ''Y'',' + CASE WHEN @intLogBackupExpireDays IS NOT NULL THEN ' @CleanupTime = ' + CAST(@intLogBackupExpireDays * 24 AS VARCHAR(10)) + ',' ELSE '' END + ' @LogToTable = ''Y''" -b' 
+		SET @LogBackupDescription =N'Perform transaction log backup of all user and system databases to a UNC path with the exception of databases whose name is like ''%DROPDB%'''
+
+		SET @MonthlyBackupJobName=N'DatabaseBackup UNC - FULL COPY ONLY - ALL_DATABASES_WITH_EXCEPTIONS'
+		SET @MonthlyBackupJobCommand  =N'sqlcmd -E -S $(ESCAPE_SQUOTE(SRVR)) -d ' + @OlaDBName + ' -Q "EXECUTE [dbo].[DatabaseBackup] @Databases = ''ALL_DATABASES, -%DROPDB%'', @Directory = ''' + @URLBackupPath +''', @BackupType = ''FULL'', @CopyOnly = ''Y'', @Verify = ''Y'', @Compress = ''Y'', @CheckSum = ''Y'', @LogToTable = ''Y''" -b' 
+		SET @MonthlyBackupDescription =N'Perform full copy only backup of all user and system databases to a UNC path with the exception of databases whose name is like ''%DROPDB%'''
+    END
+
 
 --We're going to generate and send an email containing scripts to restore all databases on this server ftw!
-SET @SendDREmailCommand = 'EXEC master.dbo.usp_EmailRestoreScript	@BlobCredential = ''' + @BlobCredential +''', @profileName = ''' + @ProfileName + ''', @recipientAddress = ''' + @DRScriptEmail + ''''
+SET @SendDREmailCommand = 'EXEC master.dbo.usp_EmailRestoreScript ' + CASE WHEN @BlobCredential IS NOT NULL THEN '@BlobCredential = ''' + @BlobCredential + ''', ' ELSE '' END + '@profileName = ''' + @ProfileName + ''', @recipientAddress = ''' + @DRScriptEmail + ''''
 
 --EXECUTE msdb.dbo.sp_add_jobstep @job_name = @FullBackupJobName, @step_name=N'Send DR restore script email', @step_id=2, @subsystem=N'TSQL', @command=@SendDREmailCommand, @database_name=N'master'
 
@@ -787,7 +903,7 @@ ALTER PROC [dbo].[usp_RestoreDB]
 ,	@TargetDB sysname
 ,	@TargetServerDataPath NVARCHAR(255)
 ,	@TargetServerLogPath	NVARCHAR(255)
-,	@BlobCredential NVARCHAR(255)
+,	@BlobCredential NVARCHAR(255) = NULL --Now optional so that we can support restore from UNC paths without this.
 ,	@BlobCredentialSecret NVARCHAR(255) = NULL	
 ,	@RecoverDB BIT = 1
 ,	@StopAt DATETIME = NULL
@@ -838,10 +954,11 @@ Params...
 @TargetServerLogPath NVARCHAR(255) [mandatory]
  Disk path on the Target Server where the log file (ldf) will be restored
 
-@BlobCredential NVARCHAR(255) [mandatory]
+@BlobCredential NVARCHAR(255) [optional]
  Name of the Credential used on the Target Server to access the Blob Storage Account.  This is normally set to match the Azure Storage Account Name.
 
  NB: If the credential doesn’t already exist and a @BlobCredentialSecret has been supplied then a new credential will be created.  If the credential already exists then it will not be overwritten as this may interfere with other processes such as backup which rely on the existing credential.
+ NB(2): This parameter is now optional but only if the database to be restored exists on a \\UNC path.
 
 @BlobCredentialSecret NVARCHAR(255) [optional]
  This is the Storage Account Access Key (Primary or Secondary).  This value is only required if there is not already a credential containing this key on the server.  If supplied in conjunction with the @BlobCredential parameter and there is not already a matching credential on the server one will be created.  Existing credentials will not be overwritten.
@@ -859,7 +976,7 @@ For more info please visit http://www.sqlfairy.com.au/2016/06/backup-to-the-clou
 
 SET NOCOUNT ON
 
-DECLARE @debug int = 2
+DECLARE @debug int = 55
 
 --Let's check that we aren't trying to restore the same DB to the same server.  This is an arbitrary restriction to stop accidents.
 IF @SourceServer = @TargetServer AND @SourceDB = @TargetDB RAISERROR(N'ERROR: Source and destination Databases are the same.  This is not supported by this utility', 1, 1) 	
@@ -970,60 +1087,6 @@ IF @intDatabaseId IS NOT NULL RETURN --STOP RIGHT NOW IF THE DATABASE IS FOUND O
 
 -------------------------------------------------------------------------------
 
---Now let's check that we have the specified credential on the target server so that the database can be restored
---If we don't have it and we have been supplied with a secret then we can create the credential.
---We're not going to update existing credentials with supplied parameters as that could cause backups to fail
---	which means that if you supply some dud credentials the first time around it could cause some pain.  --Maybe reconsider this 'feature' later
-
---We only need to check this on the destination server
-SET @SQL = ''
-
---SQL to check if we already have a credential matching the supplied name
-SET @sql = '
-SELECT top 1  @intCredentialId =
-		[credentials].[credential_id]
-FROM    ' +
-	CASE WHEN @TargetServerIsLocal = 0 THEN '[' + @TargetServer + '].' ELSE '' END +
-		'[master].[sys].[credentials] [credentials]
-		 WHERE [credentials].[name] = ''' + @BlobCredential + ''''
-
-DECLARE @intCredentialId INT
- EXEC sp_executesql @SQL,N'@intCredentialId int out', @intCredentialId OUT
-
-IF @intCredentialId IS NULL AND @BlobCredentialSecret IS NULL RAISERROR(N'ERROR: BlobCredential not located on secondary server and no BlobCredentialSecret Supplied', 1, 1) 	
-IF @debug  > 0 AND @intDatabaseId IS NOT NULL PRINT	'Database credential ' + @BlobCredential + ' located on secondary server'
-IF @intCredentialId IS NULL AND @BlobCredentialSecret IS NULL RETURN --STOP RIGHT NOW.  We need a credential secret
-
-IF @intCredentialId IS NULL AND @BlobCredentialSecret IS NOT NULL
-BEGIN
---Geez this is gettig hairy(tm) !!!1!
---NB: If you're reviewing this code the obtuse string construction and nested exec sp_executesql is required because exec will not accept a variable for the server name :(
-	IF @TargetServerIsLocal = 1
-	BEGIN
-		SET @SQL= 'CREATE CREDENTIAL [' + @BlobCredential +'] WITH IDENTITY = N''' + @BlobCredential + ''', SECRET = N''' + @BlobCredentialSecret + ''''
-		IF @debug > 1 PRINT @SQL
-		EXEC sp_executesql @SQL
-	END 
-	ELSE BEGIN
-	
-		SET @SQL= 'CREATE CREDENTIAL [' + @BlobCredential +'] WITH IDENTITY = N''' + @BlobCredential + ''', SECRET = N''' + @BlobCredentialSecret + ''''
-		PRINT @SQL
-
-		DECLARE @outerSQL NVARCHAR(max)
-		SET @outerSQL = '
-		declare @innerSQL nvarchar(max)
-		set @innerSQL = ''' + REPLACE(@SQL, '''', '''''') + '''
-		EXEC ['+ @TargetServer + '].master.dbo.sp_executesql @innerSQL'
-		IF @debug > 1 PRINT '@OuterSQL:'+ CHAR(10) + @outerSQL
-		EXEC sp_executesql @outerSQL
-	END
-END
-
---------------------------------------------------------------------------------
-IF @debug > 0 PRINT CHAR(10) + 'Made it through pre-flight checks'
-
---------------------------------------------------------------------------------
-
 --Okay... Let's restore the database FTW!!!1!
 
 --Need to generate a restore script from the primary
@@ -1036,12 +1099,11 @@ SET @runRestoreGeneSQL =
 	,	@TargetDatabase=''' + @TargetDB +'''
 	,	@WithMoveDataFiles = ''' + @TargetServerDataPath + '''
 	,	@WithMoveLogFile = ''' + @TargetServerLogPath + '''
-	,	@Log_Reference = ''Restore databaase ' + @SourceDB + ' from ' + @SourceServer + ' to ' + @TargetServer + ' as ' + @TargetDB + '.'' 
-	,	@BlobCredential = ''' + @BlobCredential + '''
-	,	@WithRecovery = ' + CAST(@RecoverDB AS nvarchar(1)) +'
+	,	@Log_Reference = ''Restore databaase ' + @SourceDB + ' from ' + @SourceServer + ' to ' + @TargetServer + ' as ' + @TargetDB + '.''' 
+	+ case when @BlobCredential is not null then ',	@BlobCredential = ''' + @BlobCredential + '''' + CHAR(10) ELSE '' END + --Don't include @blobCredential if it hasn't been supplied
+	',	@WithRecovery = ' + CAST(@RecoverDB AS nvarchar(1)) +'
 	,	@WithReplace = 0 ' +
 CASE WHEN @StopAt IS NOT NULL THEN '	,	@StopAt = ''' + CAST(@StopAt AS NVARCHAR(30)) + '''' ELSE '' END --Only include the @StopAt parm if specified
-
 IF @debug > 1 PRINT CHAR(10) + @runRestoreGeneSQL + CHAR(10)
 
 
@@ -1067,6 +1129,78 @@ INSERT INTO @RestoreRows
 EXEC sp_executesql @runRestoreGeneSQL
 
 IF @debug > 2 SELECT * FROM @RestoreRows
+
+----------We're supporting restore from a central UNC path now so check to see whether any http paths are included in the restore set...
+DECLARE @RestoreIncludesBlobFiles BIT
+IF (SELECT COUNT(*) FROM @RestoreRows WHERE BackupDevice LIKE 'http%') > 0 SET @RestoreIncludesBlobFiles = 1
+
+--Now if we do require a blob credential we will check for it here
+IF @RestoreIncludesBlobFiles = 1
+	BEGIN
+    	--Now that we've made it optional to supply an @BlobCredential so that we can handle restore from UNC \\Server\Share backups we need to check here if one has actually been supplied...
+		IF @BlobCredential IS NULL 
+			BEGIN
+				RAISERROR(N'ERROR: Backup contains files in Azure blob storage and no Credential was supplied :(', 1, 1) 	
+				RETURN --Can't continue past this point :(    	
+            END
+		
+		--Now let's check that we have the specified credential on the target server so that the database can be restored
+		--If we don't have it and we have been supplied with a secret then we can create the credential.
+		--We're not going to update existing credentials with supplied parameters as that could cause backups to fail
+		--	which means that if you supply some dud credentials the first time around it could cause some pain.  --Maybe reconsider this 'feature' later
+
+		--We only need to check this on the destination server
+		SET @SQL = ''
+
+		--SQL to check if we already have a credential matching the supplied name
+		SET @sql = '
+		SELECT top 1  @intCredentialId =
+				[credentials].[credential_id]
+		FROM    ' +
+			CASE WHEN @TargetServerIsLocal = 0 THEN '[' + @TargetServer + '].' ELSE '' END +
+				'[master].[sys].[credentials] [credentials]
+				 WHERE [credentials].[name] = ''' + @BlobCredential + ''''
+
+		DECLARE @intCredentialId INT
+		 EXEC sp_executesql @SQL,N'@intCredentialId int out', @intCredentialId OUT
+
+		IF @intCredentialId IS NULL AND @BlobCredentialSecret IS NULL RAISERROR(N'ERROR: BlobCredential not located on secondary server and no BlobCredentialSecret Supplied', 1, 1) 	
+		IF @debug  > 0 AND @intDatabaseId IS NOT NULL PRINT	'Database credential ' + @BlobCredential + ' located on secondary server'
+		IF @intCredentialId IS NULL AND @BlobCredentialSecret IS NULL RETURN --STOP RIGHT NOW.  We need a credential secret
+
+		IF @intCredentialId IS NULL AND @BlobCredentialSecret IS NOT NULL
+		BEGIN
+		--Geez this is gettig hairy(tm) !!!1!
+		--NB: If you're reviewing this code the obtuse string construction and nested exec sp_executesql is required because exec will not accept a variable for the server name :(
+			IF @TargetServerIsLocal = 1
+			BEGIN
+				SET @SQL= 'CREATE CREDENTIAL [' + @BlobCredential +'] WITH IDENTITY = N''' + @BlobCredential + ''', SECRET = N''' + @BlobCredentialSecret + ''''
+				IF @debug > 1 PRINT @SQL
+				EXEC sp_executesql @SQL
+			END 
+			ELSE BEGIN
+	
+				SET @SQL= 'CREATE CREDENTIAL [' + @BlobCredential +'] WITH IDENTITY = N''' + @BlobCredential + ''', SECRET = N''' + @BlobCredentialSecret + ''''
+				PRINT @SQL
+
+				DECLARE @outerSQL NVARCHAR(max)
+				SET @outerSQL = '
+				declare @innerSQL nvarchar(max)
+				set @innerSQL = ''' + REPLACE(@SQL, '''', '''''') + '''
+				EXEC ['+ @TargetServer + '].master.dbo.sp_executesql @innerSQL'
+				IF @debug > 1 PRINT '@OuterSQL:'+ CHAR(10) + @outerSQL
+				EXEC sp_executesql @outerSQL
+			END
+		END
+
+
+    END
+
+--------------------------------------------------------------------------------
+IF @debug > 0 PRINT CHAR(10) + 'Made it through pre-flight checks'
+
+--------------------------------------------------------------------------------
+
 
 DECLARE @RestoreStatement NVARCHAR(max)
 
@@ -1127,8 +1261,8 @@ ALTER PROC [dbo].[usp_AutoMirror]
 ,	@DatabaseName sysname
 ,	@SecondaryServerDataPath NVARCHAR(255)
 ,	@SecondaryServerLogPath	NVARCHAR(255)
-,	@BlobCredential NVARCHAR(255)
-,	@BlobCredentialSecret NVARCHAR(255) NULL = NULL	
+,	@BlobCredential NVARCHAR(255) = NULL --Now optional so that we can support restore from UNC paths without this.
+,	@BlobCredentialSecret NVARCHAR(255) = NULL
 
 )
 AS
@@ -1182,11 +1316,12 @@ Disk path on the Secondary Server where the data file (mdf) will be restored
 @SecondaryServerLogPath	NVARCHAR(255) [mandatory]
 Disk path on the Secondary Server where the log file (ldf) will be restored
 
-@BlobCredential	NVARCHAR(255) [mandatory]	
+@BlobCredential	NVARCHAR(255) [optional]	
 Name of the Credential used on the Secondary Server to access the Blob Storage Account.  
 This is normally set to match the Azure Storage Account Name.
 
 NB: If the credential doesn’t already exist and a @BlobCredentialSecret has been supplied then a new credential will be created.  If the credential already exists then it will not be overwritten as this may interfere with other processes such as backup which rely on the existing credential.
+NB(2): This parameter is now optional but only if the database to be restored exists on a \\UNC path.
 
 @BlobCredentialSecret NVARCHAR(255)	[optional]
 This is the Storage Account Access Key (Primary or Secondary).  
@@ -1365,59 +1500,6 @@ IF @intDatabaseId IS NOT NULL RETURN --STOP RIGHT NOW IF THE DATABASE IS FOUND O
 
 -------------------------------------------------------------------------------
 
---Now let's check that we have the specified credential on the mirror server so that the database can be restored
---If we don't have it and we have been supplied with a secret then we can create the credential.
---We're not going to update existing credentials with supplied parameters as that could cause backups to fail
---	which means that if you supply some dud credentials the first time around it could cause some pain.  --Maybe reconsider this 'feature' later
-
---We only need to check this on the destination server
-SET @SQL = ''
-
---SQL to check if we already have a credential matching the supplied name
-SET @sql = '
-SELECT top 1  @intCredentialId =
-		[credentials].[credential_id]
-FROM    ' +
-	CASE WHEN @SecondaryServerIsLocal = 0 THEN '[' + @SecondaryServer + '].' ELSE '' END +
-		'[master].[sys].[credentials] [credentials]
-		 WHERE [credentials].[name] = ''' + @BlobCredential + ''''
-
-DECLARE @intCredentialId INT
- EXEC sp_executesql @SQL,N'@intCredentialId int out', @intCredentialId OUT
-
-IF @intCredentialId IS NULL AND @BlobCredentialSecret IS NULL RAISERROR(N'ERROR: BlobCredential not located on secondary server and no BlobCredentialSecret Supplied', 1, 1) 	
-IF @debug  > 0 AND @intDatabaseId IS NOT NULL PRINT	'Database credential ' + @BlobCredential + ' located on secondary server'
-IF @intCredentialId IS NULL AND @BlobCredentialSecret IS NULL RETURN --STOP RIGHT NOW.  We need a credential secret
-
-IF @intCredentialId IS NULL AND @BlobCredentialSecret IS NOT NULL
-BEGIN
---Geez this is gettig hairy(tm) !!!1!
---NB: If you're reviewing this code the obtuse string construction and nested exec sp_executesql is required because exec will not accept a variable for the server name :(
-	IF @SecondaryServerIsLocal = 1
-	BEGIN
-		SET @SQL= 'CREATE CREDENTIAL [' + @BlobCredential +'] WITH IDENTITY = N''' + @BlobCredential + ''', SECRET = N''' + @BlobCredentialSecret + ''''
-		IF @debug > 1 PRINT @SQL
-		EXEC sp_executesql @SQL
-	END 
-	ELSE BEGIN
-	
-		SET @SQL= 'CREATE CREDENTIAL [' + @BlobCredential +'] WITH IDENTITY = N''' + @BlobCredential + ''', SECRET = N''' + @BlobCredentialSecret + ''''
-		PRINT @SQL
-
-		DECLARE @outerSQL NVARCHAR(max)
-		SET @outerSQL = '
-		declare @innerSQL nvarchar(max)
-		set @innerSQL = ''' + REPLACE(@SQL, '''', '''''') + '''
-		EXEC ['+ @SecondaryServer + '].master.dbo.sp_executesql @innerSQL'
-		IF @debug > 1 PRINT '@OuterSQL:'+ CHAR(10) + @outerSQL
-		EXEC sp_executesql @outerSQL
-	END
-END
-
---------------------------------------------------------------------------------
-IF @debug > 0 PRINT CHAR(10) + 'Made it through pre-flight checks'
---------------------------------------------------------------------------------
-
 --Okay... Let's restore the database to the mirror FTW!!!1!
 
 --Need to generate a restore script from the primary
@@ -1430,9 +1512,9 @@ SET @runRestoreGeneSQL =
 	,	@TargetDatabase=''' + @DatabaseName +'''
 	,	@WithMoveDataFiles = ''' + @SecondaryServerDataPath + '''
 	,	@WithMoveLogFile = ''' + @SecondaryServerLogPath + '''
-	,	@Log_Reference = ''Mirror databaase ' + @DatabaseName + 'from primary ' + @PrimaryServer + ' to ' + @SecondaryServer + '.'' 
-	,	@BlobCredential = ''' + @BlobCredential + '''
-	,	@WithRecovery = 0
+	,	@Log_Reference = ''Mirror databaase ' + @DatabaseName + 'from primary ' + @PrimaryServer + ' to ' + @SecondaryServer + '.''' 
+	+ case when @BlobCredential is not null then ',	@BlobCredential = ''' + @BlobCredential + '''' + CHAR(10) ELSE '' END + --Don't include @blobCredential if it hasn't been supplied
+	',	@WithRecovery = 0
 	,	@WithReplace = 0
 '
 
@@ -1461,6 +1543,76 @@ INSERT INTO @RestoreRows
 EXEC sp_executesql @runRestoreGeneSQL
 
 IF @debug > 2 SELECT * FROM @RestoreRows
+
+----------We're supporting restore from a central UNC path now so check to see whether any http paths are included in the restore set...
+DECLARE @RestoreIncludesBlobFiles BIT
+IF (SELECT COUNT(*) FROM @RestoreRows WHERE BackupDevice LIKE 'http%') > 0 SET @RestoreIncludesBlobFiles = 1
+
+--Now if we do require a blob credential we will check for it here
+IF @RestoreIncludesBlobFiles = 1
+	BEGIN
+    	--Now that we've made it optional to supply an @BlobCredential so that we can handle restore from UNC \\Server\Share backups we need to check here if one has actually been supplied...
+		IF @BlobCredential IS NULL 
+			BEGIN
+				RAISERROR(N'ERROR: Backup contains files in Azure blob storage and no Credential was supplied :(', 1, 1) 	
+				RETURN --Can't continue past this point :(    	
+            END
+
+
+		--Now let's check that we have the specified credential on the mirror server so that the database can be restored
+		--If we don't have it and we have been supplied with a secret then we can create the credential.
+		--We're not going to update existing credentials with supplied parameters as that could cause backups to fail
+		--	which means that if you supply some dud credentials the first time around it could cause some pain.  --Maybe reconsider this 'feature' later
+
+		--We only need to check this on the destination server
+		SET @SQL = ''
+
+		--SQL to check if we already have a credential matching the supplied name
+		SET @sql = '
+		SELECT top 1  @intCredentialId =
+				[credentials].[credential_id]
+		FROM    ' +
+			CASE WHEN @SecondaryServerIsLocal = 0 THEN '[' + @SecondaryServer + '].' ELSE '' END +
+				'[master].[sys].[credentials] [credentials]
+				 WHERE [credentials].[name] = ''' + @BlobCredential + ''''
+
+		DECLARE @intCredentialId INT
+		 EXEC sp_executesql @SQL,N'@intCredentialId int out', @intCredentialId OUT
+
+		IF @intCredentialId IS NULL AND @BlobCredentialSecret IS NULL RAISERROR(N'ERROR: BlobCredential not located on secondary server and no BlobCredentialSecret Supplied', 1, 1) 	
+		IF @debug  > 0 AND @intDatabaseId IS NOT NULL PRINT	'Database credential ' + @BlobCredential + ' located on secondary server'
+		IF @intCredentialId IS NULL AND @BlobCredentialSecret IS NULL RETURN --STOP RIGHT NOW.  We need a credential secret
+
+		IF @intCredentialId IS NULL AND @BlobCredentialSecret IS NOT NULL
+		BEGIN
+		--Geez this is gettig hairy(tm) !!!1!
+		--NB: If you're reviewing this code the obtuse string construction and nested exec sp_executesql is required because exec will not accept a variable for the server name :(
+			IF @SecondaryServerIsLocal = 1
+			BEGIN
+				SET @SQL= 'CREATE CREDENTIAL [' + @BlobCredential +'] WITH IDENTITY = N''' + @BlobCredential + ''', SECRET = N''' + @BlobCredentialSecret + ''''
+				IF @debug > 1 PRINT @SQL
+				EXEC sp_executesql @SQL
+			END 
+			ELSE BEGIN
+	
+				SET @SQL= 'CREATE CREDENTIAL [' + @BlobCredential +'] WITH IDENTITY = N''' + @BlobCredential + ''', SECRET = N''' + @BlobCredentialSecret + ''''
+				PRINT @SQL
+
+				DECLARE @outerSQL NVARCHAR(max)
+				SET @outerSQL = '
+				declare @innerSQL nvarchar(max)
+				set @innerSQL = ''' + REPLACE(@SQL, '''', '''''') + '''
+				EXEC ['+ @SecondaryServer + '].master.dbo.sp_executesql @innerSQL'
+				IF @debug > 1 PRINT '@OuterSQL:'+ CHAR(10) + @outerSQL
+				EXEC sp_executesql @outerSQL
+			END
+		END
+
+	END
+
+--------------------------------------------------------------------------------
+IF @debug > 0 PRINT CHAR(10) + 'Made it through pre-flight checks'
+--------------------------------------------------------------------------------
 
 DECLARE @RestoreStatement NVARCHAR(max)
 
