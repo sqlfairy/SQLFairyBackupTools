@@ -392,7 +392,14 @@ IF @StorageContainerURL IS NULL AND @URLBackupPath IS NOT NULL AND (@BlobCredent
 		SET @BackupTypeParamErrorMessage = '@BlobCredential &/or @BlobCredentailSecret supplied but backing up to an URL'
 	END
 
---ADD A CHECK FOR A VALID URL IN HERE >>>>>>>>>>>>>>>>>>>>>>>
+--CHECK FOR A VALID URL
+IF @StorageContainerURL IS NULL AND @URLBackupPath IS NOT NULL AND @URLBackupPath NOT LIKE '\\[0-z]%\[0-z]%' 
+	BEGIN
+		SET @BackupTypeParamErrorLevel = 2 --Error- Abort :(
+		SET @BackupTypeParamErrorMessage = '@URLBackupPath must be in the form \\Servername\Sharename or \\Servername\Sharename\Some\Path'
+	END
+
+
 
 IF @BackupTypeParamErrorLevel > 0
 	BEGIN
