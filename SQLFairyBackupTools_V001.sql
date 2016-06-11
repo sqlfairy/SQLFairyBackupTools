@@ -1551,6 +1551,13 @@ EXEC sp_executesql @runRestoreGeneSQL
 
 IF @debug > 2 SELECT * FROM @RestoreRows
 
+---------Check to see that there is at least one log file being restored.  We need this for mirroring.
+IF (SELECT COUNT(*) FROM @RestoreRows WHERE TSQL LIKE '%RESTORE LOG%') = 0 
+	BEGIN
+    	RAISERROR(N'ERROR: No transaction log backups located.  Please ensure that the database to be backed up uses the FULL recovery model and that there is at least one transaction log backup.', 1, 1) 	
+		RETURN --Can't continue past this point :(    	
+    END
+
 ----------We're supporting restore from a central UNC path now so check to see whether any http paths are included in the restore set...
 DECLARE @RestoreIncludesBlobFiles BIT
 IF (SELECT COUNT(*) FROM @RestoreRows WHERE BackupDevice LIKE 'http%') > 0 SET @RestoreIncludesBlobFiles = 1
