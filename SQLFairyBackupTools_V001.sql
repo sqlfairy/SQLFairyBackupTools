@@ -492,19 +492,20 @@ SET @intBackupTime = CAST(REPLACE(CAST(@BackupTime AS VARCHAR(50)), ':', '') AS 
 IF @DRScriptEmail IS NULL SET @DRScriptEmail = @OperatorEmail
 
 
---Create or update credential for access to blob storage
+IF @BlobCredential IS NOT NULL --Create or update credential for access to blob storage (if supplied).
+	BEGIN
+    		
+		DECLARE @credentialSQL NVARCHAR(max)
 
-DECLARE @credentialSQL NVARCHAR(max)
+		IF NOT EXISTS (SELECT [credentials].[credential_id] FROM [master].[sys].[credentials] WHERE [master].[sys].[credentials].[name] = @BlobCredential)
+			SET @credentialSQL = 'CREATE CREDENTIAL ' + @BlobCredential + ' WITH IDENTITY = ''' + @BlobCredential + ''', SECRET = ''' + @BlobCredentialSecret +''''
+		ELSE 
+			SET @credentialSQL = 'ALTER CREDENTIAL ' + @BlobCredential + ' WITH IDENTITY = ''' + @BlobCredential + ''', SECRET = ''' + @BlobCredentialSecret +''''
 
-IF NOT EXISTS (SELECT [credentials].[credential_id] FROM [master].[sys].[credentials] WHERE [master].[sys].[credentials].[name] = @BlobCredential)
-	SET @credentialSQL = 'CREATE CREDENTIAL ' + @BlobCredential + ' WITH IDENTITY = ''' + @BlobCredential + ''', SECRET = ''' + @BlobCredentialSecret +''''
-ELSE 
-	SET @credentialSQL = 'ALTER CREDENTIAL ' + @BlobCredential + ' WITH IDENTITY = ''' + @BlobCredential + ''', SECRET = ''' + @BlobCredentialSecret +''''
+		--PRINT @credentialSQL
 
---PRINT @credentialSQL
-
-EXEC [sys].[sp_executesql] @credentialSQL
-
+		EXEC [sys].[sp_executesql] @credentialSQL
+    END
 
 SET @JobOwner = 'SA'
 
