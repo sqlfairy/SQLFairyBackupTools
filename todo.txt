@@ -2,16 +2,16 @@ ToDo list: Upgrade SQL Fairy Backup tools to accomodate backups to UNC paths.
 
 8/6/2016...
 
-Update sp_ScheduleBackups to accept an @urlPath parameter.  This will be mutually exclusive with @StorageContainerURL.  
+done: Update sp_ScheduleBackups to accept an @urlPath parameter.  This will be mutually exclusive with @StorageContainerURL.  
 
-Update sp_ScheduleBackups to check if an @urlPath param has been supplied and that it looks like \\someServer\someShare
+done: Update sp_ScheduleBackups to check if an @urlPath param has been supplied and that it looks like \\someServer\someShare
 
-Update sp_ScheduleBackups to accept optional @intFullBackupExpireDays, @intDiffBackupExpireDays and @intLogBackupExpireDays parameters.  If supplied these will be used with Ola's scripts to expire the backups.
+done: Update sp_ScheduleBackups to accept optional @intFullBackupExpireDays, @intDiffBackupExpireDays and @intLogBackupExpireDays parameters.  If supplied these will be used with Ola's scripts to expire the backups.
 
-Update sp_ScheduleBackups to create jobs as backup to UNC paths instead of URL
+done: Update sp_ScheduleBackups to create jobs as backup to UNC paths instead of URL
 
-Update usp_RestoreDB to have optional parameter for BlobCredential.  If possible have it check to see if any of the files to be restored are from an URL path and complain about not having the parameter if necessary.
+done: Update usp_RestoreDB to have optional parameter for BlobCredential.  If possible have it check to see if any of the files to be restored are from an URL path and complain about not having the parameter if necessary.
 
-Update usp_AutoMirror to have optional parameter for BlobCredential.  If possible have it check to see if any of the files to be restored are from an URL path and complain about not having the parameter if necessary.
+done: Update usp_AutoMirror to have optional parameter for BlobCredential.  If possible have it check to see if any of the files to be restored are from an URL path and complain about not having the parameter if necessary.
 
-Update documentation
+in progress: Update documentation

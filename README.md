@@ -1,4 +1,4 @@
-# SQLFairyBackupTools
+﻿# SQLFairyBackupTools
 
 Copyright (c) 2016 SQL Fairy http://sqlfairy.com.au
 
@@ -27,11 +27,11 @@ Hopefully they'll make your life more pleasant in some small way. Enjoy :)
 ----------------------------------------------------
 SQLFairyBackupTools_V001.sql adds the following stored procs:
 
-dbo.sp_ScheduleBackups – Generates full, differential and transaction log SQL Server Agent jobs to backup all databases to Azure blob storage using Ola Hallengren’s backup script.  Also schedules the jobs based on provided input.
+dbo.sp_ScheduleBackups – Generates full, differential and transaction log SQL Server Agent jobs to backup all databases to Azure blob storage or a UNC path using Ola Hallengren’s backup script.  Also schedules the jobs based on provided input.  Manages creation of SQL Server credentials if backing up to Azure blob storage.
 
 dbo.sp_ScheduleMaintenance – generates separate indexOptimise and DatabaseIntegrityCheck jobs which call on Ola Hallengren’s IndexOptimize and DatabaseIntegrityCheck stored procedures respectively for each of your databases.
 
-dbo.usp_RestoreDB – Allows for automagic restore of databases from servers which are being backed up to Azure.
+dbo.usp_RestoreDB – Allows for automagic restore of databases from servers which are being backed up to Azure or an accessible shared UNC path.
 
 dbo.usp_AutoMirror – An awesome and fun tool :) which uses a similar approach to usp_RestoreDB but takes things a step further by automatically mirroring databases.
 
